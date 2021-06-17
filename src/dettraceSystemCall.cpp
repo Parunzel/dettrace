@@ -22,6 +22,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <iostream>
 
 #include <linux/fiemap.h>
 #include <linux/fs.h>
@@ -1726,6 +1727,17 @@ void readSystemCall::handleDetPost(
 
     replaySystemCall(gs, t, t.getSystemCallNumber());
   }
+  
+  // Make every read letter into uppercase.
+  /* char buffer[bytes_read];
+  readVmTraceeRaw(traceePtr<char>((char*) t.arg2()), buffer, bytes_read, s.traceePid);
+  for(int i = 0; i < bytes_read; i++){
+    if (buffer[i] > 96 && buffer[i] < 123) {
+      buffer[i] -= 32;
+    }
+  }
+  writeVmTraceeRaw(buffer, traceePtr<char>((char*) t.arg2()), bytes_read, s.traceePid);
+  fflush(stdout); */
 
   return;
 }
