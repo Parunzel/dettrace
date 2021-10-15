@@ -1728,6 +1728,10 @@ void readSystemCall::handleDetPost(
     replaySystemCall(gs, t, t.getSystemCallNumber());
   }
   
+  
+  
+  
+  
   // Make every read letter into uppercase.
   /* char buffer[bytes_read];
   readVmTraceeRaw(traceePtr<char>((char*) t.arg2()), buffer, bytes_read, s.traceePid);
@@ -1738,6 +1742,36 @@ void readSystemCall::handleDetPost(
   }
   writeVmTraceeRaw(buffer, traceePtr<char>((char*) t.arg2()), bytes_read, s.traceePid);
   fflush(stdout); */
+  
+  
+  
+  
+  
+  // Return read letter +1. If it's 122(z) it goes back to 97(a) (small letters)
+  // If it's 90 (Z) it goes back to 65 (A)
+  
+  char buffer[bytes_read];
+  readVmTraceeRaw(traceePtr<char>((char*) t.arg2()), buffer, bytes_read, s.traceePid);
+  for(int i = 0; i < bytes_read; i++){
+    if (buffer[i] > 96 && buffer[i] < 122) {
+      buffer[i] += 1;
+    }
+    else if (buffer[i] == 122) {
+      buffer[i] = 97;
+    }
+    
+    /*
+    if (buffer[i] > 64 && buffer[i] < 90) {
+      buffer[i] += 1;
+    }
+    else if (buffer[i] == 90) {
+    	buffer[i] = 65;
+    }
+    */
+    
+  }
+  writeVmTraceeRaw(buffer, traceePtr<char>((char*) t.arg2()), bytes_read, s.traceePid);
+  fflush(stdout);
 
   return;
 }
