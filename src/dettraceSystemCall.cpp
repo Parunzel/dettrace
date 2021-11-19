@@ -23,6 +23,8 @@
 #include <limits>
 #include <optional>
 #include <iostream>
+#include <fstream>
+#include <sstream>
 
 #include <linux/fiemap.h>
 #include <linux/fs.h>
@@ -1627,9 +1629,57 @@ void prlimit64SystemCall::handleDetPost(
   return;
 }
 // =======================================================================================
+// TODO: Instead of global vars, use arguments when invoking dettrace
+bool saveToFile = false;
+bool readFromFile = false;
+int readCallCounter = 0;
+
 bool readSystemCall::handleDetPre(
     globalState& gs, state& s, ptracer& t, scheduler& sched) {
   int fd = t.arg1();
+  
+  if (readFromFile) {
+  	ifstream saveFile("/home/christian/Masterthesis/dettrace/SAVEFILE.txt");
+  	string dataTag = "ch285582hc";
+  	stringstream buffer;
+  	buffer << saveFile.rdbuf();
+  	string fileString = buffer.str();
+  	
+  	string fdString = to_string(fd);
+  	string readCallCounterString = to_string(readCallCounter);
+  	
+  	
+  	int start = fileString.find(dataTag + "|" + readCallCounterString + "|");
+  	
+  	if (start != string::npos) {
+  	  int startAfterMetaData = start + dataTag.length() + readCallCounterString.length() + 2;
+  	  int endForMetaData = fileString.find("|", startAfterMetaData);
+  	  string bytesToReadString = fileString.substr(startAfterMetaData, endForMetaData - startAfterMetaData);
+  	  int bytesToRead = std::stoi(bytesToReadString);
+  	  
+  	  string dataString = fileString.substr(endForMetaData + 1, bytesToRead);
+  	  char data[bytesToRead];
+  	  strcpy(data, dataString.c_str());
+  	  writeVmTraceeRaw(data, traceePtr<char>((char*) t.arg2()), bytesToRead, s.traceePid);
+
+  	  if (readCallCounter != 0) {
+  	    if (fd == 0) {
+  	      // printf("%s", data);
+  	      fflush(stdout);
+  	    }
+  	    // Is this for all future systemcalls?? wth
+  	    replaceSystemCallWithNoop(gs, s, t);
+  	  }
+  	  readCallCounter++;
+  	  
+  	} else {
+  	  printf("||noDataFound||");
+  	  fflush(stdout);
+  	}
+  	
+  	saveFile.close();
+  	return false;
+  }
 
   gs.log.writeToLog(Importance::info, "File descriptor: %d\n", t.arg1());
   gs.log.writeToLog(
@@ -1641,6 +1691,7 @@ bool readSystemCall::handleDetPre(
 
 void readSystemCall::handleDetPost(
     globalState& gs, state& s, ptracer& t, scheduler& sched) {
+
   int fd = t.arg1();
   auto resetState = [&]() {
     // Restore user regs so that it appears as if only one syscall occurred
@@ -1719,60 +1770,41 @@ void readSystemCall::handleDetPost(
   if (bytes_read == 0 || // EOF
       s.totalBytes == s.beforeRetry.rdx) { // original bytes requested
     gs.log.writeToLog(Importance::info, "EOF or read all bytes.\n");
+    
+    // Save process reads
+    if (saveToFile) {
+        char buffer[s.totalBytes];
+    	readVmTraceeRaw(traceePtr<char>((char*) s.beforeRetry.rsi), buffer, s.totalBytes, s.traceePid);
+  	// TODO: change to dynamic filename
+  	ofstream saveFile("/home/christian/Masterthesis/dettrace/SAVEFILE.txt", ios::app);
+  	// Insert each read into the file
+  	
+  	string dataTag = "ch285582hc";
+  	// string fdString = to_string(fd);
+  	// string timeString = to_string(logical_clock::to_time_t(s.getLogicalTime()));
+  	// string returnValueString = to_string(t.getReturnValue());
+  	
+ 	string metaData = dataTag + "|" 
+ 		+ to_string(readCallCounter) + "|" 
+ 		+ to_string(s.totalBytes) + "|";
+  	saveFile << metaData;
+
+  	for (int i = 0; i < s.totalBytes; i++) {
+  	  saveFile << buffer[i];
+  	}
+  	saveFile.close();
+    }
+    readCallCounter++;
+    
     resetState();
   } else {
     gs.log.writeToLog(Importance::info, "Got less bytes than requested.\n");
     t.writeArg2(t.arg2() + bytes_read);
     t.writeArg3(t.arg3() - bytes_read);
-
+    
     replaySystemCall(gs, t, t.getSystemCallNumber());
   }
-  
-  
-  
-  
-  
-  // Make every read letter into uppercase.
-  /* char buffer[bytes_read];
-  readVmTraceeRaw(traceePtr<char>((char*) t.arg2()), buffer, bytes_read, s.traceePid);
-  for(int i = 0; i < bytes_read; i++){
-    if (buffer[i] > 96 && buffer[i] < 123) {
-      buffer[i] -= 32;
-    }
-  }
-  writeVmTraceeRaw(buffer, traceePtr<char>((char*) t.arg2()), bytes_read, s.traceePid);
-  fflush(stdout); */
-  
-  
-  
-  
-  
-  // Return read letter +1. If it's 122(z) it goes back to 97(a) (small letters)
-  // If it's 90 (Z) it goes back to 65 (A)
-  
-  char buffer[bytes_read];
-  readVmTraceeRaw(traceePtr<char>((char*) t.arg2()), buffer, bytes_read, s.traceePid);
-  for(int i = 0; i < bytes_read; i++){
-    if (buffer[i] > 96 && buffer[i] < 122) {
-      buffer[i] += 1;
-    }
-    else if (buffer[i] == 122) {
-      buffer[i] = 97;
-    }
     
-    /*
-    if (buffer[i] > 64 && buffer[i] < 90) {
-      buffer[i] += 1;
-    }
-    else if (buffer[i] == 90) {
-    	buffer[i] = 65;
-    }
-    */
-    
-  }
-  writeVmTraceeRaw(buffer, traceePtr<char>((char*) t.arg2()), bytes_read, s.traceePid);
-  fflush(stdout);
-
   return;
 }
 // =======================================================================================
