@@ -10,6 +10,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include <signal.h>
+
 #include <cstdlib>
 #include <iostream>
 #include <string>
@@ -21,6 +23,7 @@
 #define CXXOPTS_NO_RTTI 1 // no rtti for cxxopts, this should be default.
 #define CXXOPTS_VECTOR_DELIMITER '\0'
 #include <cxxopts.hpp>
+#include "globalvars.hpp"
 
 // Allow the build to override the location of the root file system. Useful if
 // the installer needs to put the rootfs elsewhere.
@@ -83,6 +86,14 @@ struct programArgs {
 
   unsigned short prng_seed;
   bool in_docker;
+  
+  // Record and replay
+  std::string pathtorrfile;
+  bool record;
+  bool replay;
+  bool realtime;
+  int endAfterReadcall;
+  int endAfterTimecall;
 
   programArgs(int argc, char* argv[]) {
     this->argc = argc;
@@ -106,6 +117,12 @@ struct programArgs {
     this->with_etc_overrides = true;
     this->prng_seed = 0;
     this->in_docker = false;
+    this->pathtorrfile = "";
+    this->record = false;
+    this->replay = false;
+    this->realtime = false;
+    this->endAfterReadcall = 0;
+    this->endAfterTimecall = 0;
   }
 };
 // =======================================================================================
@@ -121,6 +138,23 @@ static std::vector<std::unique_ptr<Mount>> make_mounts(
 
 // =======================================================================================
 
+
+// Custom signal handler for record
+void signalHandlerRecord(int signum) {
+  cout << "End record signal received\n";
+  fflush(stdout);
+  // Insert logic to turn record flag to false
+  saveToFile = !saveToFile;
+}
+
+// Custom signal handler for replay stuff
+void signalHandlerReplay(int signum) {
+  cout << "End replay signal received\n";
+  fflush(stdout);
+  // Insert logic to turn replay flag to false
+  readFromFile = !readFromFile;
+}
+
 /**
  * Given a program through the command line, spawn a child thread, call PTRACEME
  * and exec the given program. The parent will use ptrace to intercept and
@@ -128,6 +162,19 @@ static std::vector<std::unique_ptr<Mount>> make_mounts(
  */
 int main(int argc, char** argv) {
   programArgs args = parseProgramArguments(argc, argv);
+  
+  signal(SIGUSR1, signalHandlerRecord);
+  signal(SIGUSR2, signalHandlerReplay);
+  
+  saveToFile = args.record;
+  readFromFile = args.replay;
+  pathToFile = args.pathtorrfile.c_str();
+  
+  processStartTime = time(NULL);
+  realTime = args.realtime;
+  
+  endAfterReadcall = args.endAfterReadcall;
+  endAfterTimecall = args.endAfterTimecall;
 
   return run_main(args);
 }
@@ -228,6 +275,7 @@ static int run_main(programArgs& args) {
       .use_color = args.useColor,
       .print_statistics = args.printStatistics,
       .log_file = args.logFile.c_str(),
+      .pathtorrfile = args.pathtorrfile.c_str(),
   };
 
   pid_t pid = dettrace(&options);
@@ -509,7 +557,25 @@ programArgs parseProgramArguments(int argc, char* argv[]) {
       "when this is disabled, dettrace creates a fresh mount namespace. "
       "Setting to `true` is potentially dangerous. dettrace may pollute the host "
       "system’s mount namespace and not successfully clean up all of these mounts.",
-      cxxopts::value<bool>());
+      cxxopts::value<bool>())
+      ( "record",
+      "If you want to record user input",
+      cxxopts::value<bool>())
+      ( "replay",
+      "If you want to replay user input",
+      cxxopts::value<bool>())
+      ( "realtime",
+      "If you want to replay readCalls in realtime",
+      cxxopts::value<bool>())
+      ( "endAfterReadcall",
+      "If you want to end rr after certain read call",
+      cxxopts::value<int>())
+      ( "endAfterTimecall",
+      "If you want to end rr after certain time call",
+      cxxopts::value<int>())
+    ( "pathtorrfile",
+      "Specify directory to record/replay file",
+      cxxopts::value<std::string>());
 
   options.add_options(
      "3. Debugging and logging\n"
@@ -572,7 +638,15 @@ programArgs parseProgramArguments(int argc, char* argv[]) {
       std::cout << options.help() << std::endl;
       exit(0);
     }
-
+    
+    args.record = (static_cast<OptionValue1>(result["record"])).unwrap_or(false);
+    args.replay = (static_cast<OptionValue1>(result["replay"])).unwrap_or(false);
+    args.realtime = (static_cast<OptionValue1>(result["realtime"])).unwrap_or(false);
+    args.endAfterReadcall = (static_cast<OptionValue1>(result["endAfterReadcall"])).unwrap_or(0);
+    args.endAfterTimecall = (static_cast<OptionValue1>(result["endAfterTimecall"])).unwrap_or(0);
+    args.pathtorrfile =
+        (static_cast<OptionValue1>(result["pathtorrfile"])).unwrap_or(emptyString);
+        
     args.alreadyInChroot =
         (static_cast<OptionValue1>(result["already-in-chroot"]))
             .unwrap_or(false);

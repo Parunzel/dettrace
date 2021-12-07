@@ -168,7 +168,7 @@ bool execution::handleNonEventExit(const pid_t traceesPid) {
 bool execution::handlePreSystemCall(state& currState, const pid_t traceesPid) {
   int syscallNum = tracer.getSystemCallNumber();
 
-  if (syscallNum < 0 || syscallNum > SYSTEM_CALL_COUNT) {
+  if (syscallNum < -1 || syscallNum > SYSTEM_CALL_COUNT) {
     runtimeError("Unkown system call number: " + to_string(syscallNum));
   }
 
@@ -235,7 +235,7 @@ void execution::handlePostSystemCall(state& currState) {
   int syscallNum = tracer.getSystemCallNumber();
 
   // No idea what this system call is! error out.
-  if (syscallNum < 0 || syscallNum > SYSTEM_CALL_COUNT) {
+  if (syscallNum < -1 || syscallNum > SYSTEM_CALL_COUNT) {
     runtimeError("Unkown system call number: " + to_string(syscallNum));
   }
 
@@ -1329,9 +1329,12 @@ bool execution::callPreHook(
   }
 
   // Generic system call. Throws error.
-  runtimeError(
+  if (syscallNumber != -1) {
+    runtimeError(
       "This is a bug. Missing case for system call: " +
       to_string(syscallNumber));
+  }
+  
   // Can never happen, here to avoid spurious warning.
   return false;
 }
@@ -1669,11 +1672,14 @@ void execution::callPostHook(
     return shutdownSystemCall::handleDetPost(gs, s, t, sched);
   }
 
-  // Generic system call. Throws error.
-  runtimeError(
+  if (syscallNumber != -1) {
+    // Generic system call. Throws error.
+    runtimeError(
       "This is a bug: "
       "Missing case for system call: " +
       to_string(syscallNumber));
+  }
+  
 }
 // =======================================================================================
 tuple<ptraceEvent, pid_t, int> execution::getNextEvent(

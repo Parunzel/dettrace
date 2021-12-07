@@ -44,6 +44,7 @@
 #include "execution.hpp"
 #include "ptracer.hpp"
 #include "utilSystemCalls.hpp"
+#include "globalvars.hpp"
 
 // Enable tracee reads that are not strictly necessary for functionality, but
 // are enabled for instrumentation or sanity checking. For example, verify,
@@ -1630,55 +1631,78 @@ void prlimit64SystemCall::handleDetPost(
 }
 // =======================================================================================
 // TODO: Instead of global vars, use arguments when invoking dettrace
-bool saveToFile = false;
-bool readFromFile = false;
+bool saveToFile;
+bool readFromFile;
 int readCallCounter = 0;
+int bytesToRead = 0;
+bool readCall = false;
+long processStartTime;
+bool realTime;
+long timeOffset = 0;
+string pathToFile;
+int endAfterReadcall;
+int endAfterTimecall;
 
 bool readSystemCall::handleDetPre(
     globalState& gs, state& s, ptracer& t, scheduler& sched) {
   int fd = t.arg1();
   
-  if (readFromFile) {
-  	ifstream saveFile("/home/christian/Masterthesis/dettrace/SAVEFILE.txt");
-  	string dataTag = "ch285582hc";
+  if (readFromFile && fd == 0) {
+  	ifstream saveFile(pathToFile);
+  	string dataTag = "ch285582hcread";
   	stringstream buffer;
   	buffer << saveFile.rdbuf();
   	string fileString = buffer.str();
   	
   	string fdString = to_string(fd);
-  	string readCallCounterString = to_string(readCallCounter);
+  	string nextReadCallCounter = to_string(readCallCounter + 1);
   	
   	
-  	int start = fileString.find(dataTag + "|" + readCallCounterString + "|");
+  	int start = fileString.find(dataTag + "|" + "rcc:" + nextReadCallCounter + "|");
   	
   	if (start != string::npos) {
-  	  int startAfterMetaData = start + dataTag.length() + readCallCounterString.length() + 2;
-  	  int endForMetaData = fileString.find("|", startAfterMetaData);
-  	  string bytesToReadString = fileString.substr(startAfterMetaData, endForMetaData - startAfterMetaData);
-  	  int bytesToRead = std::stoi(bytesToReadString);
-  	  
-  	  string dataString = fileString.substr(endForMetaData + 1, bytesToRead);
-  	  char data[bytesToRead];
-  	  strcpy(data, dataString.c_str());
-  	  writeVmTraceeRaw(data, traceePtr<char>((char*) t.arg2()), bytesToRead, s.traceePid);
 
-  	  if (readCallCounter != 0) {
-  	    if (fd == 0) {
-  	      // printf("%s", data);
-  	      fflush(stdout);
-  	    }
-  	    // Is this for all future systemcalls?? wth
-  	    replaceSystemCallWithNoop(gs, s, t);
+  	  int bytesToReadPos = fileString.find("bytes:", start);
+  	  string bytesToReadString = fileString.substr(bytesToReadPos + 6, fileString.find("|", bytesToReadPos) - (bytesToReadPos + 6));
+  	  bytesToRead = std::stoi(bytesToReadString);
+  	  
+  	  int timePos = fileString.find("tss:", start);
+  	  string timeString = fileString.substr(timePos + 4, fileString.find("|", timePos) - (timePos + 4));
+  	  int readTimer = std::stoi(timeString);
+  	  
+  	  int dataPos = fileString.find("data:", start);
+  	  string dataString = fileString.substr(dataPos + 5, bytesToRead);
+  	  
+  	  char data[bytesToRead];
+  	  memcpy(data, dataString.c_str(), bytesToRead);
+  	  writeVmTraceeRaw(data, traceePtr<char>((char*) t.arg2()), bytesToRead, s.traceePid);
+  	  
+  	  int currentTime = (time(NULL) - processStartTime + timeOffset);
+  	  if (realTime && readTimer > currentTime) {
+  	    sleep(readTimer - currentTime);
+  	  }
+  	  
+  	  if (fd == 0) {
+  	    printf("%s", data);
+  	    fflush(stdout);
   	  }
   	  readCallCounter++;
+  	  readCall = true;
+  	  replaceSystemCallWithNoop(gs, s, t);
   	  
+  	  // end reading if X calls were already done
+          if (endAfterReadcall != 0 && endAfterReadcall <= readCallCounter) {
+            readFromFile = false;
+            saveToFile = false;
+          }
+  	  
+  	  // t.changeSystemCall(-1);
+    	  // t.setReturnRegister(bytesToRead);
+
   	} else {
-  	  printf("||noDataFound||");
-  	  fflush(stdout);
+  	  readFromFile = false;
   	}
-  	
   	saveFile.close();
-  	return false;
   }
 
   gs.log.writeToLog(Importance::info, "File descriptor: %d\n", t.arg1());
@@ -1765,36 +1789,40 @@ void readSystemCall::handleDetPost(
     s.firstTrySystemcall = false;
     s.beforeRetry = t.getRegs();
   }
+  
 
   // EOF, or read returned everything we asked for.
   if (bytes_read == 0 || // EOF
-      s.totalBytes == s.beforeRetry.rdx) { // original bytes requested
+      s.totalBytes == s.beforeRetry.rdx // original bytes requested
+      || isatty(fileno(stdin)) ) { // STDIN is a terminal
     gs.log.writeToLog(Importance::info, "EOF or read all bytes.\n");
     
     // Save process reads
-    if (saveToFile) {
+    if (saveToFile && fd == 0) {
+    	readCallCounter++;
         char buffer[s.totalBytes];
     	readVmTraceeRaw(traceePtr<char>((char*) s.beforeRetry.rsi), buffer, s.totalBytes, s.traceePid);
-  	// TODO: change to dynamic filename
-  	ofstream saveFile("/home/christian/Masterthesis/dettrace/SAVEFILE.txt", ios::app);
-  	// Insert each read into the file
+  	ofstream saveFile(pathToFile, ios::app);
   	
-  	string dataTag = "ch285582hc";
-  	// string fdString = to_string(fd);
-  	// string timeString = to_string(logical_clock::to_time_t(s.getLogicalTime()));
-  	// string returnValueString = to_string(t.getReturnValue());
+  	string dataTag = "ch285582hcread";
+  	long seconds_passed = time(NULL) - processStartTime;
   	
  	string metaData = dataTag + "|" 
- 		+ to_string(readCallCounter) + "|" 
- 		+ to_string(s.totalBytes) + "|";
+ 		+ "rcc:" + to_string(readCallCounter) + "|" 
+ 		+ "bytes:" + to_string(s.totalBytes) + "|"
+ 		+ "tss:" + to_string(seconds_passed) + "|"
+ 		+ "data:";
   	saveFile << metaData;
 
   	for (int i = 0; i < s.totalBytes; i++) {
   	  saveFile << buffer[i];
   	}
   	saveFile.close();
+  	if (endAfterReadcall != 0 && endAfterReadcall <= readCallCounter) {
+          saveToFile = false;
+          readFromFile = false;
+        }
     }
-    readCallCounter++;
     
     resetState();
   } else {
@@ -1803,6 +1831,7 @@ void readSystemCall::handleDetPost(
     t.writeArg3(t.arg3() - bytes_read);
     
     replaySystemCall(gs, t, t.getSystemCallNumber());
+    
   }
     
   return;
@@ -2493,6 +2522,12 @@ bool timeSystemCall::handleDetPre(
   return true;
 }
 
+
+
+int timeCallCounter = 0;
+bool tmptimeFromFile = readFromFile;
+long seconds_passed = 0;
+
 void timeSystemCall::handleDetPost(
     globalState& gs, state& s, ptracer& t, scheduler& sched) {
   if (s.noopSystemCall) {
@@ -2500,8 +2535,14 @@ void timeSystemCall::handleDetPost(
         Importance::info,
         "NOOP system call (getpid) setting return value to 0\n");
     s.noopSystemCall = false;
-    t.setReturnRegister(
-        0); // pretend like the system call (that we replaced) has succeeded
+    // pretend like the system call (that we replaced) has succeeded
+    if (readCall) {
+      t.setReturnRegister(bytesToRead);
+      readCall = false;
+      bytesToRead = 0;
+     } else {
+      t.setReturnRegister(0);
+     }
   }
   // This should be rare this is a vdso system call. It is unlikely someone will
   // call it directly.
@@ -2513,8 +2554,83 @@ void timeSystemCall::handleDetPost(
           Importance::info, "Time call failed: \n" + string{strerror(-retVal)});
       return;
     }
-
+    
     time_t* timePtr = (time_t*)t.arg1();
+    
+    /* my Stuff */
+    if (tmptimeFromFile != readFromFile) tmptimeFromFile = readFromFile;
+    if (readFromFile) {
+      ifstream saveFile(pathToFile);
+      string dataTag = "ch285582hctime";
+      stringstream buffer;
+      buffer << saveFile.rdbuf();
+      string fileString = buffer.str();
+  	
+      string nextTimeCallCounter = to_string(timeCallCounter + 1);
+  	
+      int start = fileString.find(dataTag + "|" + "tcc:" + nextTimeCallCounter + "|");
+  	
+      if (start != string::npos) {
+  	  int bytesToReadPos = fileString.find("bytes:", start);
+  	  string bytesToReadString = fileString.substr(bytesToReadPos + 6, fileString.find("|", bytesToReadPos) - (bytesToReadPos + 6));
+  	  int timeBytesToRead = std::stoi(bytesToReadString);
+  	  
+  	  int dataPos = fileString.find("data:", start);
+  	  string dataString = fileString.substr(dataPos + 5, timeBytesToRead);
+  	  long data = stoi(dataString);
+   	  
+  	  t.writeRax(data);
+  	  if (timePtr != nullptr) {
+            t.writeToTracee(
+              traceePtr<time_t>(timePtr), data, s.traceePid);
+          }
+          timeOffset = data;
+          timeCallCounter++;
+          processStartTime = retVal;
+  	  
+  	  if (endAfterTimecall != 0 && endAfterTimecall <= timeCallCounter) {
+            readFromFile = false;
+            saveToFile = false;
+          }
+   
+      } else {
+  	  tmptimeFromFile = false;
+  	  readFromFile = false;
+      }
+      saveFile.close();
+    }
+    
+    if (!readFromFile || !tmptimeFromFile) {
+      seconds_passed = retVal - processStartTime + timeOffset;
+      t.writeRax(seconds_passed);
+      if (timePtr != nullptr) {
+        t.writeToTracee(
+          traceePtr<time_t>(timePtr), seconds_passed, s.traceePid);
+      }
+    }
+
+    if (saveToFile && !tmptimeFromFile) {
+  	timeCallCounter++;
+  	ofstream saveFile(pathToFile, ios::app);
+  	
+  	string secondsPassedString = to_string(seconds_passed);
+  	
+  	string dataTag = "ch285582hctime";
+ 	string data = dataTag + "|" 
+ 		+ "tcc:" + to_string(timeCallCounter) + "|" 
+ 		+ "bytes:" +  to_string(secondsPassedString.length()) + "|"
+ 		+ "data:" + secondsPassedString;
+  	saveFile << data;
+  	saveFile.close();
+  	if (endAfterTimecall != 0 && endAfterTimecall <= timeCallCounter) {
+          readFromFile = false;
+          saveToFile = false;
+        }
+  	if (tmptimeFromFile != readFromFile) tmptimeFromFile = readFromFile;
+    }
+    
+    // DetTrace stuff before I added my own
+    /*
     time_t secs_since_epoch = logical_clock::to_time_t(s.getLogicalTime());
     gs.log.writeToLog(
         Importance::info, "time: tloc is null, returning %d\n",
@@ -2525,7 +2641,11 @@ void timeSystemCall::handleDetPost(
           traceePtr<time_t>(timePtr), secs_since_epoch, s.traceePid);
     }
     // Tick up time.
+    */
+    // Is this still needed?
     s.incrementTime();
+    
+    
     // preempt current task avoid some task busy checking current time
     // Since preemption can happen any place in Linux, we are not really
     // breaking any assumptions..
