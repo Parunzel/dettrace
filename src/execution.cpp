@@ -168,7 +168,7 @@ bool execution::handleNonEventExit(const pid_t traceesPid) {
 bool execution::handlePreSystemCall(state& currState, const pid_t traceesPid) {
   int syscallNum = tracer.getSystemCallNumber();
 
-  if (syscallNum < -1 || syscallNum > SYSTEM_CALL_COUNT) {
+  if (syscallNum < 0 || syscallNum > SYSTEM_CALL_COUNT) {
     runtimeError("Unkown system call number: " + to_string(syscallNum));
   }
 
@@ -235,7 +235,7 @@ void execution::handlePostSystemCall(state& currState) {
   int syscallNum = tracer.getSystemCallNumber();
 
   // No idea what this system call is! error out.
-  if (syscallNum < -1 || syscallNum > SYSTEM_CALL_COUNT) {
+  if (syscallNum < 0 || syscallNum > SYSTEM_CALL_COUNT) {
     runtimeError("Unkown system call number: " + to_string(syscallNum));
   }
 

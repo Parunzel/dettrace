@@ -45,6 +45,7 @@
 #include "ptracer.hpp"
 #include "utilSystemCalls.hpp"
 #include "globalvars.hpp"
+#include <time.h>
 
 // Enable tracee reads that are not strictly necessary for functionality, but
 // are enabled for instrumentation or sanity checking. For example, verify,
@@ -1649,7 +1650,7 @@ bool readSystemCall::handleDetPre(
   
   if (readFromFile && fd == 0) {
   	ifstream saveFile(pathToFile);
-  	string dataTag = "ch285582hcread";
+  	string dataTag = "ch285582hc";
   	stringstream buffer;
   	buffer << saveFile.rdbuf();
   	string fileString = buffer.str();
@@ -1658,7 +1659,7 @@ bool readSystemCall::handleDetPre(
   	string nextReadCallCounter = to_string(readCallCounter + 1);
   	
   	
-  	int start = fileString.find(dataTag + "|" + "rcc:" + nextReadCallCounter + "|");
+  	int start = fileString.find(dataTag + "|type:read|cc:" + nextReadCallCounter + "|");
   	
   	if (start != string::npos) {
 
@@ -1675,7 +1676,6 @@ bool readSystemCall::handleDetPre(
   	  
   	  char data[bytesToRead];
   	  memcpy(data, dataString.c_str(), bytesToRead);
-  	  writeVmTraceeRaw(data, traceePtr<char>((char*) t.arg2()), bytesToRead, s.traceePid);
   	  
   	  int currentTime = (time(NULL) - processStartTime + timeOffset);
   	  if (realTime && readTimer > currentTime) {
@@ -1687,8 +1687,13 @@ bool readSystemCall::handleDetPre(
   	    fflush(stdout);
   	  }
   	  readCallCounter++;
-  	  readCall = true;
-  	  replaceSystemCallWithNoop(gs, s, t);
+  	  // readCall = true;
+  	  // replaceSystemCallWithNoop(gs, s, t);
+  	  
+  	  writeVmTraceeRaw(data, traceePtr<char>((char*) t.arg2()), bytesToRead, s.traceePid); 
+  	  cancelSystemCall(gs, s, t);
+  	  t.setReturnRegister(bytesToRead);
+  	  
   	  
   	  // end reading if X calls were already done
           if (endAfterReadcall != 0 && endAfterReadcall <= readCallCounter) {
@@ -1696,8 +1701,6 @@ bool readSystemCall::handleDetPre(
             saveToFile = false;
           }
   	  
-  	  // t.changeSystemCall(-1);
-    	  // t.setReturnRegister(bytesToRead);
 
   	} else {
   	  readFromFile = false;
@@ -1794,23 +1797,24 @@ void readSystemCall::handleDetPost(
   // EOF, or read returned everything we asked for.
   if (bytes_read == 0 || // EOF
       s.totalBytes == s.beforeRetry.rdx // original bytes requested
-      || isatty(fileno(stdin)) ) { // STDIN is a terminal
+      || isatty(fd) ) { // STDIN is a terminal
     gs.log.writeToLog(Importance::info, "EOF or read all bytes.\n");
     
     // Save process reads
-    if (saveToFile && fd == 0) {
+    if (saveToFile && fd == 0 && isatty(fd)) {
     	readCallCounter++;
         char buffer[s.totalBytes];
     	readVmTraceeRaw(traceePtr<char>((char*) s.beforeRetry.rsi), buffer, s.totalBytes, s.traceePid);
   	ofstream saveFile(pathToFile, ios::app);
   	
-  	string dataTag = "ch285582hcread";
+  	string dataTag = "ch285582hc";
   	long seconds_passed = time(NULL) - processStartTime;
   	
  	string metaData = dataTag + "|" 
- 		+ "rcc:" + to_string(readCallCounter) + "|" 
- 		+ "bytes:" + to_string(s.totalBytes) + "|"
+ 		+ "type:" + "read" + "|"
+ 		+ "cc:" + to_string(readCallCounter) + "|" 
  		+ "tss:" + to_string(seconds_passed) + "|"
+ 		+ "bytes:" + to_string(s.totalBytes) + "|"
  		+ "data:";
   	saveFile << metaData;
 
@@ -2558,17 +2562,18 @@ void timeSystemCall::handleDetPost(
     time_t* timePtr = (time_t*)t.arg1();
     
     /* my Stuff */
+    
     if (tmptimeFromFile != readFromFile) tmptimeFromFile = readFromFile;
     if (readFromFile) {
       ifstream saveFile(pathToFile);
-      string dataTag = "ch285582hctime";
+      string dataTag = "ch285582hc";
       stringstream buffer;
       buffer << saveFile.rdbuf();
       string fileString = buffer.str();
   	
       string nextTimeCallCounter = to_string(timeCallCounter + 1);
   	
-      int start = fileString.find(dataTag + "|" + "tcc:" + nextTimeCallCounter + "|");
+      int start = fileString.find(dataTag + "|type:time|cc:" + nextTimeCallCounter + "|");
   	
       if (start != string::npos) {
   	  int bytesToReadPos = fileString.find("bytes:", start);
@@ -2615,9 +2620,11 @@ void timeSystemCall::handleDetPost(
   	
   	string secondsPassedString = to_string(seconds_passed);
   	
-  	string dataTag = "ch285582hctime";
+  	string dataTag = "ch285582hc";
  	string data = dataTag + "|" 
- 		+ "tcc:" + to_string(timeCallCounter) + "|" 
+ 		+ "type:" + "time" + "|"
+ 		+ "cc:" + to_string(timeCallCounter) + "|"
+ 		+ "tss" + secondsPassedString + "|"
  		+ "bytes:" +  to_string(secondsPassedString.length()) + "|"
  		+ "data:" + secondsPassedString;
   	saveFile << data;
@@ -2628,7 +2635,7 @@ void timeSystemCall::handleDetPost(
         }
   	if (tmptimeFromFile != readFromFile) tmptimeFromFile = readFromFile;
     }
-    
+     
     // DetTrace stuff before I added my own
     /*
     time_t secs_since_epoch = logical_clock::to_time_t(s.getLogicalTime());
@@ -2858,8 +2865,12 @@ bool setitimerSystemCall::handleDetPre(
   gs.log.writeToLog(Importance::info, "setitimer pre-hook\n");
 
   int whichTimer = t.arg1();
+  auto value = t.readFromTracee(traceePtr<struct itimerspec>((struct itimerspec*)t.arg2()), s.traceePid);
+  
   switch (whichTimer) {
   case ITIMER_REAL:
+    sleep(value.it_value.tv_sec);
+    // nanosleep(&(struct timespec){{value.it_value.tv_sec}, {value.it_value.tv_nsec}}, NULL);
     return sendTraceeSignalNow(SIGALRM, gs, s, t, sched);
   case ITIMER_VIRTUAL:
     return sendTraceeSignalNow(SIGVTALRM, gs, s, t, sched);

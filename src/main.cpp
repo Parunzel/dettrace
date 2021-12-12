@@ -275,7 +275,6 @@ static int run_main(programArgs& args) {
       .use_color = args.useColor,
       .print_statistics = args.printStatistics,
       .log_file = args.logFile.c_str(),
-      .pathtorrfile = args.pathtorrfile.c_str(),
   };
 
   pid_t pid = dettrace(&options);
